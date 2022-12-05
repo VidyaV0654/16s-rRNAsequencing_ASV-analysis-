@@ -1,0 +1,240 @@
+---
+title: "Untitled"
+author: "Vidya"
+date: "2022-12-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+setwd("~/ENVS_6452/Assignment_3_ASVclass/ASV_assignment_dada2")
+#Load up the required packages 
+library(dada2); packageVersion("dada2")
+library(ggplot2)
+library(phyloseq)
+#this list my sequencing files
+list.files()
+path<-"~/ENVS_6452/Assignment_3_ASVclass/ASV_assignment_dada2"
+list.files(path)
+# Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+
+fnFs <- sort(list.files(path, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
+####if reads are in format SAMPLENAME_F.fastq- Another kind of naming by the sequencing company
+#fnFs <- sort(list.files(path, pattern="_F_001.fastq", full.names = TRUE))
+#fnRs <- sort(list.files(path, pattern="_R_001.fastq", full.names = TRUE))
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+###Considerations for your own data: The string manipulations may have to be modified if your filename format is different.
+
+##Inspect read quality profiles- We start by visualizing the quality profiles of the forward reads:
+#looking at error of forward read
+plotQualityProfile(fnFs[1:2])
+#looking at error of reverese read
+plotQualityProfile(fnRs[1:2])
+
+#what to truncate depends on the sample
+# Place filtered files in filtered/ subdirectory
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+
+# require mannual input where to truncate- IMPORTANT*
+###Additions: different trunclength and add trimLeft= c(18,20)
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(290,190),
+                     maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+                     compress=TRUE, multithread=FALSE, trimLeft = c(18,20)) # On Windows set multithread=FALSE
+head(out)
+
+#Learn the Error Rates
+errF <- learnErrors(filtFs, multithread=FALSE,MAX_CONSIST=20)
+#dada2:::checkConvergence(errF){in case if any error}
+errR <- learnErrors(filtRs, multithread=FALSE)
+#dada2:::checkConvergence(errR){#in case if any error}
+plotErrors(errF, nominalQ=TRUE)
+
+#DEREP the sequences
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+
+#Sample Inference
+dadaFs <- dada(derepFs, err=errF, multithread=TRUE)
+dadaRs <- dada(derepRs, err=errR, multithread=TRUE)
+
+#Inspecting the returned dada-class object:
+dadaFs[[1]]
+#Merge paired reads
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE)
+# (seqtab)Inspect the merger data.frame from the first sample
+head(mergers[[1]])
+#Construct sequence table
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+# Inspect distribution of sequence lengths
+table(nchar(getSequences(seqtab)))
+#Remove chimeras
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+sum(seqtab.nochim)/sum(seqtab)
+#This transposes the seqtab.nochim data if you want to look at it as a column
+flipped_seqtab.nochim<- as.data.frame(t(seqtab.nochim))
+View(flipped_seqtab.nochim)
+#Can now just look at the reads that made it through each step in our pipeline.
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+##Assign taxonomy
+taxa <- assignTaxonomy(seqtab.nochim, "~/ENVS_6452/Assignment_3_ASVclass/ASV_assignment_dada2/silva_nr99_v138.1_train_set.fa.gz", multithread=TRUE)
+list()
+taxa <- addSpecies(taxa, "~/ENVS_6452/Assignment_3_ASVclass/ASV_assignment_dada2/silva_species_assignment_v138.1.fa.gz")
+#Let's inspect the taxonomic assignments:
+taxa.print <- taxa # Removing sequence rownames for display only
+rownames(taxa.print) <- NULL
+head(taxa.print)
+##SAVING AS YOU GO #Not in the Dada2 protocol** 
+write.csv (taxa, file = "~/ENVS_6452/Assignment_3_ASVclass/ASV_assignment_dada2/pumicerock.csv_taxa.csv")
+write.csv (seqtab.nochim, file="~/ENVS_6452/Assignment_3_ASVclass/ASV_assignment_dada2/pumicerock.seqtab.nochim.csv")
+write.csv (flipped_seqtab.nochim, file="~/ENVS_6452/Assignment_3_ASVclass/ASV_assignment_dada2/pumicerockFlipped_seqtab.nochim.csv")
+#this saves your flipped seqtab no chim file with your taxa data as one data sheet
+OTUabund<-cbind(flipped_seqtab.nochim, taxa)
+write.csv(OTUabund, file="~/ENVS_6452/Assignment_3_ASVclass/ASV_assignment_dada2/OTUabund2.csv")
+list.files(path) 
+#Graphing Now we have our ASVs identified and we have taxa, we will hand this data off to the package Phyloseq to help us process them, also use ggplot to graph. We will need biostrings to help.
+library(phyloseq); packageVersion("phyloseq")
+library(ggplot2); packageVersion("ggplot2")
+library(Biostrings); packageVersion("Biostrings")
+#now We will construct a dataframe (a table with data) from our filenames:
+samples.out <- rownames(seqtab.nochim)
+samdf <- data.frame(samples.out)
+rownames(samdf) <- samples.out
+#Phyloseq
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+               sample_data(samdf), 
+               tax_table(taxa))
+ps
+#It is a lot easier to have a table with ASV
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+#plotting, with fill as phylum
+plot_bar(ps)
+plot_bar(ps, fill="Phylum")
+#GGplot always makes plots nicer :) Lets geom_bar over our plot, to get rid of the lines that separate Though note - this is a plot that lists absolute abundance, not relative
+p=plot_bar(ps)
+p + geom_bar(aes(fill=Phylum), stat="identity", position="stack")
+##To get relative abundance, we have to divide the number of reads by a taxa, by the total taxa in that sample typically. But dont worry, phyloseq already has a function for that!
+#Transform data to plot relative abundance
+relative<- transform_sample_counts(ps, function(OTU) OTU/sum(OTU))
+relative
+#Graph relative abundance by phylum
+Phylum_graph <- plot_bar(relative, fill="Phylum") +ylab ("Relative Abundance")
+Phylum_graph
+#geom_bar to overwrite the lines.
+Phylum_graph + geom_bar(aes(fill=Phylum), stat="identity", position="stack")
+#Lets first save where we are (saveRDS) and then use some of the handy features of phyloseq, which was built to handle microbiome data
+saveRDS(ps, "ps.rds")
+#Tax_glom will conglomerate all the reads of an identical taxa together ( here, we want to count everything that is the same phylum)
+ps_phylum <- tax_glom(ps, "Phylum")
+#Now we are just taking this, and turning it into relative abundance as we did above
+ps1_phylum_relabun <- transform_sample_counts(ps_phylum, function(ASV) ASV/sum(ASV))
+#The psmelt function of phyloseq will make a dataframe of our phyloseq data for us, we also need it to be a factor
+taxa_abundance_table_phylum <- psmelt(ps1_phylum_relabun)
+taxa_abundance_table_phylum$Phylum<-factor(taxa_abundance_table_phylum$Phylum)
+#Now we can graph in ggplot - there is a lot of room to change elements here, play around with fonts. sizes etc.
+ggplot(data=taxa_abundance_table_phylum,mapping=aes(x=Sample,y=Abundance*100,))+geom_col(position="stack", stat="identity")+aes(fill=Phylum)+ 
+  theme_bw()+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(x="Samples", y="Phylum Relative Abundance (%)",title="Relative Abundance:Phylum level(Pumice and Control)", size = "Relative Abundance(%)")  + 
+  theme(axis.text.x = element_text(face="bold", color="Black", size=10, angle=90),
+        axis.ticks.x=element_blank(), #tickmark aesthetics
+        axis.text.y = element_text(face="bold", color="Black", size=10, angle=0))
+#geom_point
+ggplot(data=taxa_abundance_table_phylum,mapping=aes(x=Sample,y=Phylum ))+geom_point(scales="free_x")+(aes(size = Abundance,colour=Phylum))+ggtitle("Pumice rock microbiota ")+scale_size_area()+ 
+  theme_bw()+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(x="Samples", y="Phylum Relative Abundance (%)", size = "Relative Abundance(%)")  + 
+  theme(axis.text.x = element_text(face="plain", color="Black", size=10, angle=90),
+        axis.ticks.x=element_blank(), #tickmark aesthetics
+        axis.text.y = element_text(face="bold", color="Black", size=10, angle=0)) 
+#remove all zeros and convert to NA #syntax is dataframe [dataframe == what you want to replace] <- NA #comp2[comp2 == 0] <- NA
+taxa_abundance_table_phylum[taxa_abundance_table_phylum == 0] <- NA
+ggplot(data=taxa_abundance_table_phylum,mapping=aes(x=Sample,y=Phylum ))+geom_point(scales="free_x")+(aes(size = Abundance,colour=Phylum))+ggtitle("Pumice rock microbiota: Phylum relative abundance")+scale_size_area()+ 
+  theme_bw()+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(x="Samples", y="Phylum Relative Abundance (%)", size = "Relative Abundance(%)")  + 
+  theme(axis.text.x = element_text(face="plain", color="Black", size=8, angle=90),
+        axis.ticks.x=element_blank(), #tickmark aesthetics
+        axis.text.y = element_text(face="bold", color="Black", size=6, angle=0)) 
+
+###RA Order
+
+#plotting, with fill as Order
+plot_bar(ps)
+plot_bar(ps, fill="Order")
+#GGplot always makes plots nicer :) Lets geom_bar over our plot, to get rid of the lines that separate Though note - this is a plot that lists absolute abundance, not relative
+p=plot_bar(ps)
+p + geom_bar(aes(fill=Order), stat="identity", position="stack")
+##To get relative abundance, we have to divide the number of reads by a taxa, by the total taxa in that sample typically. But dont worry, phyloseq already has a function for that!
+#Transform data to plot relative abundance
+# relative<- transform_sample_counts(ps, function(OTU) OTU/sum(OTU))
+#relative
+#Graph relative abundance by phylum
+Order_graph <- plot_bar(relative, fill="Order") +ylab ("Relative Abundance")
+Order_graph
+#geom_bar to overwrite the lines.
+Order_graph + geom_bar(aes(fill=Order), stat="identity", position="stack")
+#Lets first save where we are (saveRDS) and then use some of the handy features of phyloseq, which was built to handle microbiome data
+#saveRDS(ps, "ps.rds")
+#Tax_glom will conglomerate all the reads of an identical taxa together ( here, we want to count everything that is the same phylum)
+ps_order <- tax_glom(ps, "Order")
+#Now we are just taking this, and turning it into relative abundance as we did above
+ps1_order_relabun <- transform_sample_counts(ps_order, function(ASV) ASV/sum(ASV))
+#The psmelt function of phyloseq will make a dataframe of our phyloseq data for us, we also need it to be a factor
+taxa_abundance_table_order <- psmelt(ps1_order_relabun)
+taxa_abundance_table_order$Order<-factor(taxa_abundance_table_order$Order)
+#Now we can graph in ggplot - there is a lot of room to change elements here, play around with fonts. sizes etc.
+ggplot(data=taxa_abundance_table_order,mapping=aes(x=Sample,y=Abundance*100,))+geom_col(position="stack", stat="identity")+aes(fill=Order)+ 
+  theme_bw()+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(x="Samples", y="Order Relative Abundance (%)",title="Relative Abundance:Order level(Pumice and Control)", size = "Relative Abundance(%)")  + 
+  theme(axis.text.x = element_text(face="bold", color="Black", size=10, angle=90),
+        axis.ticks.x=element_blank(), #tickmark aesthetics
+        axis.text.y = element_text(face="bold", color="Black", size=10, angle=0))
+#geom_point
+ggplot(data=taxa_abundance_table_order,mapping=aes(x=Sample,y=Order ))+geom_point(scales="free_x")+(aes(size = Abundance,colour=Order))+ggtitle("Pumice rock microbiota:Order level relative abundance")+scale_size_area()+ 
+  theme_bw()+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(x="Samples", y="Order Relative Abundance (%)", size = "Relative Abundance(%)")  + 
+  theme(axis.text.x = element_text(face="plain", color="Black", size=10, angle=90),
+        axis.ticks.x=element_blank(), #tickmark aesthetics
+        axis.text.y = element_text(face="bold", color="Black", size=10, angle=0)) 
+#remove all zeros and convert to NA #syntax is dataframe [dataframe == what you want to replace] <- NA #comp2[comp2 == 0] <- NA
+taxa_abundance_table_order[taxa_abundance_table_order == 0] <- NA
+ggplot(data=taxa_abundance_table_order,mapping=aes(x=Sample,y=Order ))+geom_point(scales="free_x")+(aes(size = Abundance,colour=Order))+ggtitle("Pumice rock microbiota:Order relative abundance")+scale_size_area()+ 
+  theme_bw()+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(x="Samples", y="Order Relative Abundance (%)", size = "Relative Abundance(%)")  + 
+  theme(axis.text.x = element_text(face="plain", color="Black", size=8, angle=90),
+        axis.ticks.x=element_blank(), #tickmark aesthetics
+        axis.text.y = element_text(face="bold", color="Black", size=6, angle=0)) 
+
+
+
+
+```
+
+
+You can also embed plots, for example:
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
